@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Immersive Flowing Ocean — p5.js</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.11.10/p5.min.js"></script>
+  <style>
+    html, body { margin:0; padding:0; overflow:hidden; background:#02070d; }
+    canvas { display:block; }
+  </style>
+</head>
+<body>
+<script>
+/*
+  Immersive "teamLab-ish" water:
+  - Hundreds of glowing streamline particles
+  - Large-scale flowing current
+  - Multiple vortices
+  - Mouse acts as a person standing in the water
+  - Dragging the mouse creates a strong local whirlpool
+*/
+
+const PARTICLE_COUNT = 5200;
+let particles = [];
+let vortices = [];
+let t = 0;
+
+function setup() {
+  createCanvas(windowWidth, windowHeight);
+  pixelDensity(1);
+
+  vortices = [
+    { x: width * 0.76, y: height * 0.62, strength: 2.0, radius: 230, dir: 1 },
+    { x: width * 0.18, y: height * 0.72, strength: 1.25, radius: 260, dir: -1 },
+    { x: width * 0.53, y: height * 0.25, strength: 0.85, radius: 190, dir: 1 }
+  ];
+
+  for (let i = 0; i < PARTICLE_COUNT; i++) {
+    particles.push(new StreamParticle(true));
+  }
+}
+
+function draw() {
+  // Very dark base gives the projected water its strong contrast.
+  background(1, 5, 10);
+
+  t += 0.004;
+
+  // Put a temporary "human disturbance" under the mouse.
+  if (mouseX > 0 && mouseY > 0) {
+    vortices[0].x = lerp(vortices[0].x, mouseX, 0.045);
+    vortices[0].y = lerp(vortices[0].y, mouseY, 0.045);
+  }
+
+  // Draw several passes: faint flow + bright highlights.
+  drawFlowPass(0.55, false);
+
+  blendMode(ADD);
+  drawFlowPass(1.0, true);
+  blendMode(BLEND);
+
+  // Gentle atmospheric glow around the strongest current.
+  noStroke();
+  radialGlow(vortices[0].x, vortices[0].y, 260);
+}
+
+function drawFlowPass(alphaScale, bright) {
+  for (const p of particles) {
+    p.update();
+    p.display(alphaScale, bright);
+  }
+}
+
+class StreamParticle {
+  constructor(initial = false) {
+    this.reset(initial);
+  }
+
+  reset(initial = false) {
+    this.x = random(width);
+    this.y = initial ? random(height) : random(height);
+
+    // Longer "memory" makes lines feel like fluid streamlines.
+    this.history = [];
+    this.maxHistory = floor(random(5, 18));
+
+    this.seed = random(1000);
+    this.speed = random(0.7, 2.5);
+    this.thickness = random(0.45, 1.6);
+
+    const r = random();
+    if (r < 0.06) this.type = "bright";
+    else if (r < 0.20) this.type = "medium";
+    else this.type = "fine";
+
+    for (let i = 0; i < this.maxHistory; i++) {
+      this.history.push({ x: this.x, y: this.y });
+    }
+  }
+
+  update() {
+    let v = flowAt(this.x, this.y);
+
+    // Some particles occasionally accelerate.
+    const localSpeed = this.speed * (0.75 + 0.35 * noise(this.seed, t));
+
+    this.history.push({ x: this.x, y: this.y });
+    if (this.history.length > this.maxHistory) this.history.shift();
+
+    this.x += v.x * localSpeed;
+    this.y += v.y * localSpeed;
+
+    // Wrap around, but clear the trail first.
+    // Otherwise the particle draws a bright straight line from
+    // one screen edge to the opposite edge.
+    const margin = 80;
+    let wrapped = false;
+
+    if (this.x < -margin) {
+      this.x = width + margin;
+      wrapped = true;
+    }
+    if (this.x > width + margin) {
+      this.x = -margin;
+      wrapped = true;
+    }
+    if (this.y < -margin) {
+      this.y = height + margin;
+      wrapped = true;
+    }
+    if (this.y > height + margin) {
+      this.y = -margin;
+      wrapped = true;
+    }
+
+    if (wrapped) {
+      this.history.length = 0;
+      for (let i = 0; i < this.maxHistory; i++) {
+        this.history.push({ x: this.x, y: this.y });
+      }
+    }
+  }
+
+  display(alphaScale, bright) {
+    if (this.history.length < 2) return;
+
+    let a;
+    if (this.type === "bright") a = bright ? random(95, 180) : random(30, 75);
+    else if (this.type === "medium") a = bright ? random(42, 100) : random(14, 45);
+    else a = bright ? random(15, 55) : random(6, 24);
+
+    a *= alphaScale;
+
+    // Slight blue-white variation.
+    const b = random(220, 255);
+    const g = random(135, 205);
+    const r = random(70, 125);
+
+    stroke(r, g, b, a);
+    strokeWeight(this.thickness);
+
+    noFill();
+    beginShape();
+    for (const q of this.history) {
+      curveVertex(q.x, q.y);
+    }
+    endShape();
+  }
+}
+
+// Vector field inspired by currents and eddies.
+// It is intentionally smooth, with large features rather than noisy "game water".
+function flowAt(x, y) {
+  let vx = 0.95;
+  let vy = 0.02;
+
+  // Large slow sinuous current.
+  const bend =
+    sin(y * 0.008 + t * 8.0) * 0.75 +
+    sin(y * 0.003 - t * 4.0) * 0.45;
+
+  vx += bend;
+  vy += sin(x * 0.004 + y * 0.002 + t * 7) * 0.28;
+
+  // Large-scale meandering.
+  vx += (noise(x * 0.0026, y * 0.0026, t) - 0.5) * 0.9;
+  vy += (noise(x * 0.0026 + 40, y * 0.0026, t) - 0.5) * 0.65;
+
+  // Vortices.
+  for (const vortex of vortices) {
+    const dx = x - vortex.x;
+    const dy = y - vortex.y;
+    const d = sqrt(dx * dx + dy * dy) + 0.0001;
+
+    if (d < vortex.radius) {
+      const falloff = pow(1 - d / vortex.radius, 1.5);
+      const tangentX = -dy / d;
+      const tangentY = dx / d;
+
+      vx += tangentX * vortex.strength * falloff;
+      vy += tangentY * vortex.strength * falloff * vortex.dir;
+
+      // Pull a little toward the vortex center.
+      vx += (-dx / d) * 0.16 * falloff;
+      vy += (-dy / d) * 0.16 * falloff;
+    }
+  }
+
+  // Special "person" interaction: stronger when mouse is moving/clicking.
+  if (mouseX >= 0 && mouseY >= 0) {
+    const dx = x - mouseX;
+    const dy = y - mouseY;
+    const d = sqrt(dx * dx + dy * dy) + 0.0001;
+    const radius = mouseIsPressed ? 180 : 90;
+
+    if (d < radius) {
+      const falloff = 1 - d / radius;
+      const tx = -dy / d;
+      const ty = dx / d;
+
+      vx += tx * (mouseIsPressed ? 5.2 : 2.5) * falloff;
+      vy += ty * (mouseIsPressed ? 5.2 : 2.5) * falloff;
+
+      // Repulsion from the "body".
+      vx += (dx / d) * (mouseIsPressed ? 1.9 : 0.55) * falloff;
+      vy += (dy / d) * (mouseIsPressed ? 1.9 : 0.55) * falloff;
+    }
+  }
+
+  return normalizeVector(vx, vy);
+}
+
+function normalizeVector(x, y) {
+  const m = sqrt(x * x + y * y) || 1;
+  return { x: x / m, y: y / m };
+}
+
+function radialGlow(cx, cy, radius) {
+  for (let r = radius; r > 20; r -= 18) {
+    const a = map(r, radius, 20, 0, 9);
+    fill(40, 130, 220, a);
+    ellipse(cx, cy, r * 2, r * 2);
+  }
+}
+
+function mousePressed() {
+  // Click creates an immediate strong disturbance.
+  for (let i = 0; i < 120; i++) {
+    const p = particles[floor(random(particles.length))];
+    const angle = random(TWO_PI);
+    p.x = mouseX + cos(angle) * random(20, 140);
+    p.y = mouseY + sin(angle) * random(20, 140);
+  }
+}
+
+function windowResized() {
+  resizeCanvas(windowWidth, windowHeight);
+
+  vortices[0].x = width * 0.76;
+  vortices[0].y = height * 0.62;
+  vortices[1].x = width * 0.18;
+  vortices[1].y = height * 0.72;
+  vortices[2].x = width * 0.53;
+  vortices[2].y = height * 0.25;
+}
+</script>
+</body>
+</html>
